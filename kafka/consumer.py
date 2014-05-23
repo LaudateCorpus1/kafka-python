@@ -7,6 +7,7 @@ import numbers
 from threading import Lock
 from multiprocessing import Process, Queue as MPQueue, Event, Value
 from Queue import Empty, Queue
+from datetime import datetime, timedelta
 
 import kafka
 from kafka.common import (
@@ -507,6 +508,8 @@ def _mp_consume(client, group, topic, chunk, queue, start, exit, pause, size):
 
     consumer.stop()
 
+class QueueReadTimeout(Exception):
+    pass
 
 class MultiProcessConsumer(Consumer):
     """
@@ -526,6 +529,9 @@ class MultiProcessConsumer(Consumer):
                The available partitions will be divided among these processes
     partitions_per_proc: Number of partitions to be allocated per process
                (overrides num_procs)
+    throw_on_timeout:    Raise QueueReadTimeout after read timeout expiration
+    read_timeout_t:      Number of milliseconds to wait before timing out a read operation.
+                         Only relevant if throw_on_timeout is set to True.
 
     Auto commit details:
     If both auto_commit_every_n and auto_commit_every_t are set, they will
@@ -536,7 +542,11 @@ class MultiProcessConsumer(Consumer):
     def __init__(self, client, group, topic, auto_commit=True,
                  auto_commit_every_n=AUTO_COMMIT_MSG_COUNT,
                  auto_commit_every_t=AUTO_COMMIT_INTERVAL,
-                 num_procs=1, partitions_per_proc=0):
+                 num_procs=1, partitions_per_proc=0,
+                 throw_on_read_timeout=False, read_timeout_t=5000):
+
+        self.throw_on_read_timeout = throw_on_read_timeout
+        self.read_timeout_t = timedelta(milliseconds = read_timeout_t)
 
         # Initiate the base consumer class
         super(MultiProcessConsumer, self).__init__(
@@ -553,6 +563,7 @@ class MultiProcessConsumer(Consumer):
         self.exit = Event()         # Requests the consumers to shutdown
         self.pause = Event()        # Requests the consumers to pause fetch
         self.size = Value('i', 0)   # Indicator of number of messages to fetch
+        self.read_start = None      # Controls queue read time outs
 
         partitions = self.offsets.keys()
 
@@ -609,6 +620,8 @@ class MultiProcessConsumer(Consumer):
 
         while True:
             self.start.set()
+            if self.read_start is None:
+                self.read_start = datetime.utcnow()
             try:
                 # We will block for a small while so that the consumers get
                 # a chance to run and put some messages in the queue
@@ -616,15 +629,17 @@ class MultiProcessConsumer(Consumer):
                 # at least one second. Need to find a better way of doing this
                 partition, message = self.queue.get(block=True, timeout=1)
             except Empty:
-                break
-
+                if self.throw_on_read_timeout and ((datetime.utcnow() - self.read_start) > self.read_timeout_t):
+                    raise QueueReadTimeout
+                else:
+                    break
             # Count, check and commit messages if necessary
             self.offsets[partition] = message.offset + 1
             self.start.clear()
             self.count_since_commit += 1
             self._auto_commit()
+            self.read_start = None
             yield message
-
         self.start.clear()
 
     def get_messages(self, count=1, block=True, timeout=10):
