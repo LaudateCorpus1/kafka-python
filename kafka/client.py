@@ -1,6 +1,7 @@
 import copy
 import logging
 import collections
+import socket
 
 import kafka.common
 
@@ -20,7 +21,7 @@ log = logging.getLogger("kafka")
 
 class KafkaClient(object):
 
-    CLIENT_ID = "kafka-python"
+    CLIENT_ID = socket.gethostname()
     ID_GEN = count()
 
     # NOTE: The timeout given to the client should always be greater than the
