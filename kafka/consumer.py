@@ -105,9 +105,22 @@ class Consumer(object):
         def get_or_init_offset_callback(resp):
             try:
                 kafka.common.check_error(resp)
-                return resp.offset
-            except kafka.common.UnknownTopicOrPartitionError:
-                return 0
+                if resp.offset < self.min_offsets[resp.partition]:
+                    log.info("OffsetFetchRequest for topic=%s, partition=%d returned an offset below current minimum: %s. Using minimum offsest of %s." % (
+                        resp.topic, resp.partition, resp.offset, self.min_offsets[resp.partition])
+                    )
+                    return self.min_offsets[resp.partition]
+                else:
+                    return resp.offset
+            except kafka.common.UnknownTopicOrPartitionError as err:
+                log.info("OffsetFetchRequest for topic=%s, partition=%d failed with errorcode=%s (%s). Using minimum offsest of %s." % (
+                    resp.topic, resp.partition, resp.error, err, self.min_offsets[resp.partition])
+                )
+                return self.min_offsets[resp.partition]
+            except kafka.common.KafkaError as err:
+                raise Exception("OffsetFetchRequest for topic=%s, "
+                                "partition=%d failed with errorcode=%s (%s)" % (
+                                    resp.topic, resp.partition, resp.error, err))
 
         if auto_commit:
             for partition in partitions:
