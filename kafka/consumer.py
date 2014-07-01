@@ -81,6 +81,7 @@ class Consumer(object):
         self.group = group
         self.client.load_metadata_for_topics(topic)
         self.offsets = {}
+        self.min_offsets = {}
 
         if not partitions:
             partitions = self.client.topic_partitions[topic]
@@ -118,6 +119,14 @@ class Consumer(object):
         else:
             for partition in partitions:
                 self.offsets[partition] = 0
+
+        reqs = [
+            OffsetRequest(topic, partition, -2, 1)
+            for partition in partitions
+        ]
+        resps = self.client.send_offset_request(reqs, fail_on_error=True)
+        for resp in resps:
+            self.min_offsets[resp.partition] = resp.offsets[0]
 
     def commit(self, partitions=None):
         """
