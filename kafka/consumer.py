@@ -122,6 +122,14 @@ class Consumer(object):
                                 "partition=%d failed with errorcode=%s (%s)" % (
                                     resp.topic, resp.partition, resp.error, err))
 
+        reqs = [
+            OffsetRequest(topic, partition, -2, 1)
+            for partition in partitions
+        ]
+        resps = self.client.send_offset_request(reqs, fail_on_error=True)
+        for resp in resps:
+            self.min_offsets[resp.partition] = resp.offsets[0]
+
         if auto_commit:
             for partition in partitions:
                 req = OffsetFetchRequest(topic, partition)
@@ -130,16 +138,7 @@ class Consumer(object):
                               fail_on_error=False)
                 self.offsets[partition] = offset
         else:
-            for partition in partitions:
-                self.offsets[partition] = 0
-
-        reqs = [
-            OffsetRequest(topic, partition, -2, 1)
-            for partition in partitions
-        ]
-        resps = self.client.send_offset_request(reqs, fail_on_error=True)
-        for resp in resps:
-            self.min_offsets[resp.partition] = resp.offsets[0]
+            self.offsets.update(self.min_offsets)
 
     def commit(self, partitions=None):
         """
@@ -173,6 +172,7 @@ class Consumer(object):
                 reqs.append(OffsetCommitRequest(self.topic, partition,
                                                 offset, None))
 
+            log.info('Committing offsets on %d partitions', len(reqs))
             resps = self.client.send_offset_commit_request(self.group, reqs)
             for resp in resps:
                 kafka.common.check_error(resp)
