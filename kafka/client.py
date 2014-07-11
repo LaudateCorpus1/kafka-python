@@ -160,12 +160,12 @@ class KafkaClient(object):
                 try:
                     response = conn.recv(requestId)
                 except ConnectionError as e:
-                    log.warning("Could not receive response to request [%s] "
-                                "from server %s: %s", request, conn, e)
+                    log.warning("Could not receive response to request "
+                                "from server %s: %s", conn, e)
                     failed = True
             except ConnectionError as e:
-                log.warning("Could not send request [%s] to server %s: %s",
-                            request, conn, e)
+                log.warning("Could not send request to server %s: %s",
+                            conn, e)
                 failed = True
 
             if failed:
