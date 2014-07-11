@@ -22,6 +22,8 @@ setup(
     name="kafka-python",
     version="0.9.1",
 
+    install_requires=['kazoo', 'hash_ring'],
+
     tests_require=["tox", "mock"],
     cmdclass={"test": Tox},
 
