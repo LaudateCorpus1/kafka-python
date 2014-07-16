@@ -97,7 +97,7 @@ class ZKPartitioner(object):
     }
 
     def __init__(self, client, group, topic,
-                 identifier=None, time_boundary=30):
+                 identifier=None, time_boundary=30, partitions_changed_cb=None):
         """Create a :class:`~ZKPartitioner` instance
 
         :param client: A :class:`~kazoo.client.KazooClient` instance.
@@ -140,6 +140,7 @@ class ZKPartitioner(object):
         # so we know when we're ready
         self._children_updated = False
         self._child_watching(self._allocate_transition, async=True)
+        self.partitions_changed_cb = partitions_changed_cb
 
     def get_partitions(self):
         t_partition_path = self.path_formats['topic'].format(topic=self.topic)
@@ -276,18 +277,18 @@ class ZKPartitioner(object):
             if self.consumer_ring.get_node(partition) != self._identifier and
                 int(partition) in my_partitions
         ]
+        self.logger.info('Release locks: my old partitions: %r', my_old_partitions)
         for partition in my_old_partitions:
             self.logger.info('Releasing ownership of partition %s',
                              partition)
             p_path = self.path_formats['owner'].format(group=self.group,
                                                        topic=self.topic,
                                                        partition=partition)
-            try:
-                self.zk.delete(p_path)
+            self.logger.info('Deleting path: %s', p_path)
+            self._client.delete(p_path)
+            if int(partition) in my_partitions:
+                self.logger.info('Removing from my partitions: %s', partition)
                 my_partitions.remove(int(partition))
-            except NoNodeError as err:
-                msg = "Couldn't release partition ownership for: %s"
-                self.logger.exception(msg, partition)
 
     def _abort_lock_acquisition(self):
         """Called during lock acquisition if a party change occurs"""
@@ -308,9 +309,9 @@ class ZKPartitioner(object):
         any callbacks might run.
 
         """
-        watcher = PatientChildrenWatch(self._client, self._party_path,
-                                       self._time_boundary)
-        asy = watcher.start()
+        self.watcher = PatientChildrenWatch(self._client, self._party_path,
+                                            self._time_boundary)
+        asy = self.watcher.start()
         if func is not None:
             # We spin up the function in a separate thread/greenlet
             # to ensure that the rawlink's it might use won't be
@@ -353,11 +354,18 @@ class ZKPartitioner(object):
 
         return sorted(my_partitions)
 
-    def rebalance(self, partition_ids):
+    def rebalance(self, partition_ids=None):
+        if partition_ids is None:
+            partition_ids = [
+                str(p_id)
+                for p_id in self.consumer_partitions[self._identifier]
+            ]
+        #self.consumer_ring = HashRing(list(self._party))
         kr = KazooRetry(max_tries=3)
         kr.retry_exceptions = kr.retry_exceptions + tuple([NodeExistsError])
 
         my_partitions = self.consumer_partitions[self._identifier]
+        self.logger.info('My partitions (%d): %s', len(my_partitions), my_partitions)
 
         # Clean up old ownership data first, so we don't block
         # the joining node(s)
@@ -369,6 +377,7 @@ class ZKPartitioner(object):
             if self.consumer_ring.get_node(partition) == self._identifier and \
                int(partition) not in my_partitions
         ]
+        self.logger.info('My new partitions (%d): %s', len(my_new_partitions), my_new_partitions)
         for partition in my_new_partitions:
             c_id = self.consumer_ring.get_node(partition)
             self.consumer_partitions[c_id].append(int(partition))
@@ -376,8 +385,8 @@ class ZKPartitioner(object):
                                                        topic=self.topic,
                                                        partition=partition)
             try:
-                self.logger.info('Acquiring ownership of partition %s',
-                                 partition)
+                self.logger.debug('Acquiring ownership of partition %s',
+                                  partition)
                 kr(self._client.create, p_path,
                    value=self._identifier, ephemeral=True, makepath=True)
             except RetryFailedError as err:
@@ -388,14 +397,16 @@ class ZKPartitioner(object):
                 # We need to delete / create, so that the node is created
                 # ephemeral and owned by us
                 self._client.delete(p_path)
-                self._client.create(p_path, value=self.zkp._identifier,
+                self._client.create(p_path, value=self._identifier,
                                     ephemeral=True, makepath=True)
+        if self.partitions_changed_cb:
+            self.partitions_changed_cb(self.consumer_partitions[self._identifier])
 
 
 class ZKConsumer(object):
 
     zk_timeout = 30
-    jitter_seconds = 5
+    jitter_seconds = 30
     broker_prefix = '/brokers/ids'
 
     def __init__(
@@ -439,7 +450,8 @@ class ZKConsumer(object):
 
     def init_zkp(self):
         self.zkp = ZKPartitioner(self.zk, self.group, self.topic,
-                                 time_boundary=self.jitter_seconds)
+                                 time_boundary=self.jitter_seconds,
+                                 partitions_changed_cb=self.init_consumer)
         # Setup watchers
         # NOTE: the order here is important, as kazoo will call them initially
         #       (as well as when they change):
@@ -456,16 +468,6 @@ class ZKConsumer(object):
             elif self.zkp.release:
                 self.zkp.release_set()
             elif self.zkp.acquired:
-                self.init_consumer(list(self.zkp))
-                @self.zk.ChildrenWatch(self.zkp._party_path)
-                def consumer_change_proxy(consumer_ids):
-                    self.onConsumerChange(consumer_ids)
-
-                t_path = self.zkp.path_formats['topic'].format(topic=self.topic)
-                @self.zk.ChildrenWatch(t_path)
-                def topic_change_proxy(partition_ids):
-                    self.onTopicChange(partition_ids)
-
                 break
             elif self.zkp.allocating:
                 self.zkp.wait_for_acquire()
@@ -490,26 +492,13 @@ class ZKConsumer(object):
 
         self.client = KafkaClient(broker_hosts, client_id=self.zkp._identifier)
 
-    def onTopicChange(self, partition_ids):
-        callback = Callback('rebalance',
-                            self.zkp.rebalance,
-                            (partition_ids,))
-        self.zk.handler.dispatch_callback(callback)
-
-    def onConsumerChange(self, consumer_ids):
-        self.consumer_ring = HashRing(consumer_ids)
-        t_path = self.zkp.path_formats['topic'].format(topic=self.topic)
-        topic_partitions = self.zk.get_children(t_path)
-        callback = Callback('rebalance',
-                            self.zkp.rebalance,
-                            (topic_partitions,))
-        self.zk.handler.dispatch_callback(callback)
-
     def init_consumer(self, my_partitions):
         if self.consumer is not None:
-            if my_partitions != sorted(self.consumer.offsets.keys()):
+            if sorted(my_partitions) != sorted(self.consumer.offsets.keys()):
+                self.logger.info('Partitions changed, restarting Kafka consumer.')
                 self.consumer.stop()
             else:
+                self.logger.info('Partitions unchanged, not restarting Kafka consumer.')
                 return
 
         self.consumer = SimpleConsumer(self.client, self.group, self.topic,
