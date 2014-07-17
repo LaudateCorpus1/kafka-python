@@ -130,15 +130,12 @@ class Consumer(object):
         for resp in resps:
             self.min_offsets[resp.partition] = resp.offsets[0]
 
-        if auto_commit:
-            for partition in partitions:
-                req = OffsetFetchRequest(topic, partition)
-                (offset,) = self.client.send_offset_fetch_request(group, [req],
-                              callback=get_or_init_offset_callback,
-                              fail_on_error=False)
-                self.offsets[partition] = offset
-        else:
-            self.offsets.update(self.min_offsets)
+        for partition in partitions:
+            req = OffsetFetchRequest(topic, partition)
+            (offset,) = self.client.send_offset_fetch_request(group, [req],
+                          callback=get_or_init_offset_callback,
+                          fail_on_error=False)
+            self.offsets[partition] = offset
 
     def commit(self, partitions=None):
         """
