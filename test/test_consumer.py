@@ -1,22 +1,15 @@
-import os
-import random
-import struct
-import unittest2
 
-from mock import MagicMock, patch
+from mock import MagicMock
+from . import unittest
 
-from kafka import KafkaClient
-from kafka.consumer import SimpleConsumer
-from kafka.common import (
-    ProduceRequest, BrokerMetadata, PartitionMetadata,
-    TopicAndPartition, KafkaUnavailableError,
-    LeaderUnavailableError, PartitionUnavailableError
-)
-from kafka.protocol import (
-    create_message, KafkaProtocol
-)
+from kafka import SimpleConsumer, KafkaConsumer
+from kafka.common import KafkaConfigurationError
 
-class TestKafkaConsumer(unittest2.TestCase):
+class TestKafkaConsumer(unittest.TestCase):
     def test_non_integer_partitions(self):
         with self.assertRaises(AssertionError):
-            consumer = SimpleConsumer(MagicMock(), 'group', 'topic', partitions = [ '0' ])
+            SimpleConsumer(MagicMock(), 'group', 'topic', partitions = [ '0' ])
+
+    def test_broker_list_required(self):
+        with self.assertRaises(KafkaConfigurationError):
+            KafkaConsumer()

@@ -2,7 +2,6 @@ import logging
 import re
 import select
 import subprocess
-import sys
 import threading
 import time
 
@@ -14,7 +13,7 @@ __all__ = [
 
 class ExternalService(object):
     def __init__(self, host, port):
-        print("Using already running service at %s:%d" % (host, port))
+        logging.info("Using already running service at %s:%d", host, port)
         self.host = host
         self.port = port
 
@@ -26,10 +25,13 @@ class ExternalService(object):
 
 
 class SpawnedService(threading.Thread):
-    def __init__(self, args=[]):
+    def __init__(self, args=None, env=None):
         threading.Thread.__init__(self)
 
+        if args is None:
+            raise TypeError("args parameter is required")
         self.args = args
+        self.env = env
         self.captured_stdout = []
         self.captured_stderr = []
 
@@ -41,21 +43,22 @@ class SpawnedService(threading.Thread):
     def run_with_handles(self):
         self.child = subprocess.Popen(
             self.args,
+            env=self.env,
             bufsize=1,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE)
         alive = True
 
         while True:
-            (rds, wds, xds) = select.select([self.child.stdout, self.child.stderr], [], [], 1)
+            (rds, _, _) = select.select([self.child.stdout, self.child.stderr], [], [], 1)
 
             if self.child.stdout in rds:
                 line = self.child.stdout.readline()
-                self.captured_stdout.append(line)
+                self.captured_stdout.append(line.decode('utf-8'))
 
             if self.child.stderr in rds:
                 line = self.child.stderr.readline()
-                self.captured_stderr.append(line)
+                self.captured_stderr.append(line.decode('utf-8'))
 
             if self.should_die.is_set():
                 self.child.terminate()
@@ -78,7 +81,7 @@ class SpawnedService(threading.Thread):
         for line in self.captured_stdout:
             logging.critical(line.rstrip())
 
-    def wait_for(self, pattern, timeout=10):
+    def wait_for(self, pattern, timeout=30):
         t1 = time.time()
         while True:
             t2 = time.time()
@@ -89,11 +92,13 @@ class SpawnedService(threading.Thread):
                     logging.exception("Received exception when killing child process")
                 self.dump_logs()
 
-                raise RuntimeError("Waiting for %r timed out" % pattern)
+                raise RuntimeError("Waiting for %r timed out after %d seconds" % (pattern, timeout))
 
             if re.search(pattern, '\n'.join(self.captured_stdout), re.IGNORECASE) is not None:
+                logging.info("Found pattern %r in %d seconds via stdout", pattern, (t2 - t1))
                 return
             if re.search(pattern, '\n'.join(self.captured_stderr), re.IGNORECASE) is not None:
+                logging.info("Found pattern %r in %d seconds via stderr", pattern, (t2 - t1))
                 return
             time.sleep(0.1)
 

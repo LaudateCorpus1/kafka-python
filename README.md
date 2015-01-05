@@ -1,6 +1,6 @@
 # Kafka Python client
 
-[![Build Status](https://travis-ci.org/mumrah/kafka-python.png)](https://travis-ci.org/mumrah/kafka-python)
+[![Build Status](https://api.travis-ci.org/mumrah/kafka-python.png?branch=master)](https://travis-ci.org/mumrah/kafka-python)
 
 This module provides low-level protocol support for Apache Kafka as well as
 high-level consumer and producer classes. Request batching is supported by the
@@ -9,13 +9,18 @@ is also supported for message sets.
 
 http://kafka.apache.org/
 
+On Freenode IRC at #kafka-python, as well as #apache-kafka
+
+For general discussion of kafka-client design and implementation (not python specific),
+see https://groups.google.com/forum/m/#!forum/kafka-clients
+
 # License
 
-Copyright 2013, David Arthur under Apache License, v2.0. See `LICENSE`
+Copyright 2014, David Arthur under Apache License, v2.0. See `LICENSE`
 
 # Status
 
-The current version of this package is **0.9.1** and is compatible with
+The current stable version of this package is [**0.9.2**](https://github.com/mumrah/kafka-python/releases/tag/v0.9.2) and is compatible with
 
 Kafka broker versions
 - 0.8.0
@@ -23,27 +28,32 @@ Kafka broker versions
 - 0.8.1.1
 
 Python versions
-- 2.6.9
-- 2.7.6
-- pypy 2.2.1
+- 2.6 (tested on 2.6.9)
+- 2.7 (tested on 2.7.8)
+- pypy (tested on pypy 2.3.1 / python 2.7.6)
+- (Python 3.3 and 3.4 support has been added to trunk and will be available the next release)
 
 # Usage
 
 ## High level
 
 ```python
-from kafka.client import KafkaClient
-from kafka.consumer import SimpleConsumer
-from kafka.producer import SimpleProducer, KeyedProducer
-
-kafka = KafkaClient("localhost:9092")
+from kafka import KafkaClient, SimpleProducer, SimpleConsumer
 
 # To send messages synchronously
+kafka = KafkaClient("localhost:9092")
 producer = SimpleProducer(kafka)
+
+# Note that the application is responsible for encoding messages to type str
 producer.send_messages("my-topic", "some message")
 producer.send_messages("my-topic", "this method", "is variadic")
 
+# Send unicode message
+producer.send_messages("my-topic", u'你怎么样?'.encode('utf-8'))
+
 # To send messages asynchronously
+# WARNING: current implementation does not guarantee message delivery on failure!
+# messages can get dropped! Use at your own risk! Or help us improve with a PR!
 producer = SimpleProducer(kafka, async=True)
 producer.send_messages("my-topic", "async message")
 
@@ -56,7 +66,7 @@ producer = SimpleProducer(kafka, async=False,
                           req_acks=SimpleProducer.ACK_AFTER_LOCAL_WRITE,
                           ack_timeout=2000)
 
-response = producer.send_messages("my-topic", "async message")
+response = producer.send_messages("my-topic", "another message")
 
 if response:
     print(response[0].error)
@@ -76,6 +86,8 @@ producer = SimpleProducer(kafka, batch_send=True,
 # To consume messages
 consumer = SimpleConsumer(kafka, "my-group", "my-topic")
 for message in consumer:
+    # message is raw byte string -- decode if necessary!
+    # e.g., for unicode: `message.decode('utf-8')`
     print(message)
 
 kafka.close()
@@ -83,9 +95,7 @@ kafka.close()
 
 ## Keyed messages
 ```python
-from kafka.client import KafkaClient
-from kafka.producer import KeyedProducer
-from kafka.partitioner import HashedPartitioner, RoundRobinPartitioner
+from kafka import KafkaClient, KeyedProducer, HashedPartitioner, RoundRobinPartitioner
 
 kafka = KafkaClient("localhost:9092")
 
@@ -99,8 +109,7 @@ producer = KeyedProducer(kafka, partitioner=RoundRobinPartitioner)
 
 ## Multiprocess consumer
 ```python
-from kafka.client import KafkaClient
-from kafka.consumer import MultiProcessConsumer
+from kafka import KafkaClient, MultiProcessConsumer
 
 kafka = KafkaClient("localhost:9092")
 
@@ -121,10 +130,14 @@ for message in consumer.get_messages(count=5, block=True, timeout=4):
 ## Low level
 
 ```python
-from kafka.client import KafkaClient
+from kafka import KafkaClient, create_message
+from kafka.protocol import KafkaProtocol
+from kafka.common import ProduceRequest
+
 kafka = KafkaClient("localhost:9092")
+
 req = ProduceRequest(topic="my-topic", partition=1,
-    messages=[KafkaProdocol.encode_message("some message")])
+    messages=[create_message("some message")])
 resps = kafka.send_produce_request(payloads=[req], fail_on_error=True)
 kafka.close()
 
@@ -138,8 +151,17 @@ resps[0].offset     # offset of the first message sent in this request
 
 Install with your favorite package manager
 
+## Latest Release
 Pip:
 
+```shell
+pip install kafka-python
+```
+
+Releases are also listed at https://github.com/mumrah/kafka-python/releases
+
+
+## Bleeding-Edge
 ```shell
 git clone https://github.com/mumrah/kafka-python
 pip install ./kafka-python
@@ -160,9 +182,20 @@ python setup.py install
 
 ## Optional Snappy install
 
+### Install Development Libraries
 Download and build Snappy from http://code.google.com/p/snappy/downloads/list
 
-Linux:
+Ubuntu:
+```shell
+apt-get install libsnappy-dev
+```
+
+OSX:
+```shell
+brew install snappy
+```
+
+From Source:
 ```shell
 wget http://snappy.googlecode.com/files/snappy-1.0.5.tar.gz
 tar xzvf snappy-1.0.5.tar.gz
@@ -172,11 +205,7 @@ make
 sudo make install
 ```
 
-OSX:
-```shell
-brew install snappy
-```
-
+### Install Python Module
 Install the `python-snappy` module
 ```shell
 pip install python-snappy
@@ -190,32 +219,46 @@ pip install python-snappy
 tox
 ```
 
+## Run a subset of unit tests
+```shell
+# run protocol tests only
+tox -- -v test.test_protocol
+```
+
+```shell
+# test with pypy only
+tox -e pypy
+```
+
+```shell
+# Run only 1 test, and use python 2.7
+tox -e py27 -- -v --with-id --collect-only
+# pick a test number from the list like #102
+tox -e py27 -- -v --with-id 102
+```
+
 ## Run the integration tests
 
 The integration tests will actually start up real local Zookeeper
 instance and Kafka brokers, and send messages in using the client.
 
-Note that you may want to add this to your global gitignore:
+First, get the kafka binaries for integration testing:
 ```shell
-.gradle/
-clients/build/
-contrib/build/
-contrib/hadoop-consumer/build/
-contrib/hadoop-producer/build/
-core/build/
-core/data/
-examples/build/
-perf/build/
-```
-
-First, check out and the Kafka source:
-```shell
-git submodule update --init
 ./build_integration.sh
 ```
+By default, the build_integration.sh script will download binary
+distributions for all supported kafka versions.
+To test against the latest source build, set KAFKA_VERSION=trunk
+and optionally set SCALA_VERSION (defaults to 2.8.0, but 2.10.1 is recommended)
+```shell
+SCALA_VERSION=2.10.1 KAFKA_VERSION=trunk ./build_integration.sh
+```
 
-Then run the tests against supported Kafka versions:
+Then run the tests against supported Kafka versions, simply set the `KAFKA_VERSION`
+env variable to the server build you want to use for testing:
 ```shell
 KAFKA_VERSION=0.8.0 tox
 KAFKA_VERSION=0.8.1 tox
+KAFKA_VERSION=0.8.1.1 tox
+KAFKA_VERSION=trunk tox
 ```

@@ -2,14 +2,24 @@ import os
 import time
 import uuid
 
-from kafka import *  # noqa
-from kafka.common import *  # noqa
-from kafka.codec import has_gzip, has_snappy
-from fixtures import ZookeeperFixture, KafkaFixture
-from testutil import *
+from six.moves import range
+
+from kafka import (
+    SimpleProducer, KeyedProducer,
+    create_message, create_gzip_message, create_snappy_message,
+    RoundRobinPartitioner, HashedPartitioner
+)
+from kafka.codec import has_snappy
+from kafka.common import (
+    FetchRequest, ProduceRequest,
+    UnknownTopicOrPartitionError, LeaderNotAvailableError
+)
+
+from test.fixtures import ZookeeperFixture, KafkaFixture
+from test.testutil import KafkaIntegrationTestCase, kafka_versions
 
 class TestKafkaProducerIntegration(KafkaIntegrationTestCase):
-    topic = 'produce_topic'
+    topic = b'produce_topic'
 
     @classmethod
     def setUpClass(cls):  # noqa
@@ -32,13 +42,15 @@ class TestKafkaProducerIntegration(KafkaIntegrationTestCase):
         start_offset = self.current_offset(self.topic, 0)
 
         self.assert_produce_request(
-            [ create_message("Test message %d" % i) for i in range(100) ],
+            [create_message(("Test message %d" % i).encode('utf-8'))
+             for i in range(100)],
             start_offset,
             100,
         )
 
         self.assert_produce_request(
-            [ create_message("Test message %d" % i) for i in range(100) ],
+            [create_message(("Test message %d" % i).encode('utf-8'))
+             for i in range(100)],
             start_offset+100,
             100,
         )
@@ -48,7 +60,8 @@ class TestKafkaProducerIntegration(KafkaIntegrationTestCase):
         start_offset = self.current_offset(self.topic, 0)
 
         self.assert_produce_request(
-            [ create_message("Test message %d" % i) for i in range(10000) ],
+            [create_message(("Test message %d" % i).encode('utf-8'))
+             for i in range(10000)],
             start_offset,
             10000,
         )
@@ -57,8 +70,10 @@ class TestKafkaProducerIntegration(KafkaIntegrationTestCase):
     def test_produce_many_gzip(self):
         start_offset = self.current_offset(self.topic, 0)
 
-        message1 = create_gzip_message(["Gzipped 1 %d" % i for i in range(100)])
-        message2 = create_gzip_message(["Gzipped 2 %d" % i for i in range(100)])
+        message1 = create_gzip_message([
+            ("Gzipped 1 %d" % i).encode('utf-8') for i in range(100)])
+        message2 = create_gzip_message([
+            ("Gzipped 2 %d" % i).encode('utf-8') for i in range(100)])
 
         self.assert_produce_request(
             [ message1, message2 ],
@@ -85,8 +100,9 @@ class TestKafkaProducerIntegration(KafkaIntegrationTestCase):
 
         msg_count = 1+100
         messages = [
-            create_message("Just a plain message"),
-            create_gzip_message(["Gzipped %d" % i for i in range(100)]),
+            create_message(b"Just a plain message"),
+            create_gzip_message([
+                ("Gzipped %d" % i).encode('utf-8') for i in range(100)]),
         ]
 
         # All snappy integration tests fail with nosnappyjava
@@ -101,14 +117,18 @@ class TestKafkaProducerIntegration(KafkaIntegrationTestCase):
         start_offset = self.current_offset(self.topic, 0)
 
         self.assert_produce_request([
-                create_gzip_message(["Gzipped batch 1, message %d" % i for i in range(50000)])
+            create_gzip_message([
+                ("Gzipped batch 1, message %d" % i).encode('utf-8')
+                for i in range(50000)])
             ],
             start_offset,
             50000,
         )
 
         self.assert_produce_request([
-                create_gzip_message(["Gzipped batch 1, message %d" % i for i in range(50000)])
+            create_gzip_message([
+                ("Gzipped batch 1, message %d" % i).encode('utf-8')
+                for i in range(50000)])
             ],
             start_offset+50000,
             50000,
@@ -143,6 +163,16 @@ class TestKafkaProducerIntegration(KafkaIntegrationTestCase):
         producer.stop()
 
     @kafka_versions("all")
+    def test_produce__new_topic_fails_with_reasonable_error(self):
+        new_topic = 'new_topic_{guid}'.format(guid = str(uuid.uuid4())).encode('utf-8')
+        producer = SimpleProducer(self.client)
+
+        # At first it doesn't exist
+        with self.assertRaises((UnknownTopicOrPartitionError,
+                                LeaderNotAvailableError)):
+            producer.send_messages(new_topic, self.msg("one"))
+
+    @kafka_versions("all")
     def test_producer_random_order(self):
         producer = SimpleProducer(self.client, random_start = True)
         resp1 = producer.send_messages(self.topic, self.msg("one"), self.msg("two"))
@@ -169,10 +199,10 @@ class TestKafkaProducerIntegration(KafkaIntegrationTestCase):
         start_offset1 = self.current_offset(self.topic, 1)
 
         producer = KeyedProducer(self.client, partitioner=RoundRobinPartitioner)
-        resp1 = producer.send(self.topic, "key1", self.msg("one"))
-        resp2 = producer.send(self.topic, "key2", self.msg("two"))
-        resp3 = producer.send(self.topic, "key3", self.msg("three"))
-        resp4 = producer.send(self.topic, "key4", self.msg("four"))
+        resp1 = producer.send(self.topic, self.key("key1"), self.msg("one"))
+        resp2 = producer.send(self.topic, self.key("key2"), self.msg("two"))
+        resp3 = producer.send(self.topic, self.key("key3"), self.msg("three"))
+        resp4 = producer.send(self.topic, self.key("key4"), self.msg("four"))
 
         self.assert_produce_response(resp1, start_offset0+0)
         self.assert_produce_response(resp2, start_offset1+0)
@@ -190,31 +220,38 @@ class TestKafkaProducerIntegration(KafkaIntegrationTestCase):
         start_offset1 = self.current_offset(self.topic, 1)
 
         producer = KeyedProducer(self.client, partitioner=HashedPartitioner)
-        resp1 = producer.send(self.topic, 1, self.msg("one"))
-        resp2 = producer.send(self.topic, 2, self.msg("two"))
-        resp3 = producer.send(self.topic, 3, self.msg("three"))
-        resp4 = producer.send(self.topic, 3, self.msg("four"))
-        resp5 = producer.send(self.topic, 4, self.msg("five"))
+        resp1 = producer.send(self.topic, self.key("1"), self.msg("one"))
+        resp2 = producer.send(self.topic, self.key("2"), self.msg("two"))
+        resp3 = producer.send(self.topic, self.key("3"), self.msg("three"))
+        resp4 = producer.send(self.topic, self.key("3"), self.msg("four"))
+        resp5 = producer.send(self.topic, self.key("4"), self.msg("five"))
 
-        self.assert_produce_response(resp1, start_offset1+0)
-        self.assert_produce_response(resp2, start_offset0+0)
-        self.assert_produce_response(resp3, start_offset1+1)
-        self.assert_produce_response(resp4, start_offset1+2)
-        self.assert_produce_response(resp5, start_offset0+1)
+        offsets = {0: start_offset0, 1: start_offset1}
+        messages = {0: [], 1: []}
 
-        self.assert_fetch_offset(0, start_offset0, [ self.msg("two"), self.msg("five") ])
-        self.assert_fetch_offset(1, start_offset1, [ self.msg("one"), self.msg("three"), self.msg("four") ])
+        keys = [self.key(k) for k in ["1", "2", "3", "3", "4"]]
+        resps = [resp1, resp2, resp3, resp4, resp5]
+        msgs = [self.msg(m) for m in ["one", "two", "three", "four", "five"]]
+
+        for key, resp, msg in zip(keys, resps, msgs):
+            k = hash(key) % 2
+            offset = offsets[k]
+            self.assert_produce_response(resp, offset)
+            offsets[k] += 1
+            messages[k].append(msg)
+
+        self.assert_fetch_offset(0, start_offset0, messages[0])
+        self.assert_fetch_offset(1, start_offset1, messages[1])
 
         producer.stop()
 
     @kafka_versions("all")
     def test_acks_none(self):
         start_offset0 = self.current_offset(self.topic, 0)
-        start_offset1 = self.current_offset(self.topic, 1)
 
         producer = SimpleProducer(self.client, req_acks=SimpleProducer.ACK_NOT_REQUIRED)
         resp = producer.send_messages(self.topic, self.msg("one"))
-        self.assertEquals(len(resp), 0)
+        self.assertEqual(len(resp), 0)
 
         self.assert_fetch_offset(0, start_offset0, [ self.msg("one") ])
         producer.stop()
@@ -222,7 +259,6 @@ class TestKafkaProducerIntegration(KafkaIntegrationTestCase):
     @kafka_versions("all")
     def test_acks_local_write(self):
         start_offset0 = self.current_offset(self.topic, 0)
-        start_offset1 = self.current_offset(self.topic, 1)
 
         producer = SimpleProducer(self.client, req_acks=SimpleProducer.ACK_AFTER_LOCAL_WRITE)
         resp = producer.send_messages(self.topic, self.msg("one"))
@@ -235,7 +271,6 @@ class TestKafkaProducerIntegration(KafkaIntegrationTestCase):
     @kafka_versions("all")
     def test_acks_cluster_commit(self):
         start_offset0 = self.current_offset(self.topic, 0)
-        start_offset1 = self.current_offset(self.topic, 1)
 
         producer = SimpleProducer(
             self.client,
@@ -266,7 +301,7 @@ class TestKafkaProducerIntegration(KafkaIntegrationTestCase):
         )
 
         # Batch mode is async. No ack
-        self.assertEquals(len(resp), 0)
+        self.assertEqual(len(resp), 0)
 
         # It hasn't sent yet
         self.assert_fetch_offset(0, start_offset0, [])
@@ -279,7 +314,7 @@ class TestKafkaProducerIntegration(KafkaIntegrationTestCase):
         )
 
         # Batch mode is async. No ack
-        self.assertEquals(len(resp), 0)
+        self.assertEqual(len(resp), 0)
 
         self.assert_fetch_offset(0, start_offset0, [
             self.msg("one"),
@@ -315,7 +350,7 @@ class TestKafkaProducerIntegration(KafkaIntegrationTestCase):
         )
 
         # Batch mode is async. No ack
-        self.assertEquals(len(resp), 0)
+        self.assertEqual(len(resp), 0)
 
         # It hasn't sent yet
         self.assert_fetch_offset(0, start_offset0, [])
@@ -328,7 +363,7 @@ class TestKafkaProducerIntegration(KafkaIntegrationTestCase):
         )
 
         # Batch mode is async. No ack
-        self.assertEquals(len(resp), 0)
+        self.assertEqual(len(resp), 0)
 
         # Wait the timeout out
         time.sleep(5)
@@ -351,11 +386,10 @@ class TestKafkaProducerIntegration(KafkaIntegrationTestCase):
     @kafka_versions("all")
     def test_async_simple_producer(self):
         start_offset0 = self.current_offset(self.topic, 0)
-        start_offset1 = self.current_offset(self.topic, 1)
 
         producer = SimpleProducer(self.client, async=True)
         resp = producer.send_messages(self.topic, self.msg("one"))
-        self.assertEquals(len(resp), 0)
+        self.assertEqual(len(resp), 0)
 
         self.assert_fetch_offset(0, start_offset0, [ self.msg("one") ])
 
@@ -364,12 +398,11 @@ class TestKafkaProducerIntegration(KafkaIntegrationTestCase):
     @kafka_versions("all")
     def test_async_keyed_producer(self):
         start_offset0 = self.current_offset(self.topic, 0)
-        start_offset1 = self.current_offset(self.topic, 1)
 
         producer = KeyedProducer(self.client, partitioner = RoundRobinPartitioner, async=True)
 
-        resp = producer.send(self.topic, "key1", self.msg("one"))
-        self.assertEquals(len(resp), 0)
+        resp = producer.send(self.topic, self.key("key1"), self.msg("one"))
+        self.assertEqual(len(resp), 0)
 
         self.assert_fetch_offset(0, start_offset0, [ self.msg("one") ])
 
@@ -396,9 +429,9 @@ class TestKafkaProducerIntegration(KafkaIntegrationTestCase):
 
         resp, = self.client.send_fetch_request([ FetchRequest(self.topic, partition, start_offset, 1024) ])
 
-        self.assertEquals(resp.error, 0)
-        self.assertEquals(resp.partition, partition)
+        self.assertEqual(resp.error, 0)
+        self.assertEqual(resp.partition, partition)
         messages = [ x.message.value for x in resp.messages ]
 
         self.assertEqual(messages, expected_messages)
-        self.assertEquals(resp.highwaterMark, start_offset+len(expected_messages))
+        self.assertEqual(resp.highwaterMark, start_offset+len(expected_messages))

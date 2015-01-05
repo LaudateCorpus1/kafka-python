@@ -5,15 +5,16 @@ import random
 import socket
 import string
 import time
-import unittest2
 import uuid
 
-from kafka.common import OffsetRequest
+from six.moves import xrange
+from . import unittest
+
 from kafka import KafkaClient
+from kafka.common import OffsetRequest
 
 __all__ = [
     'random_string',
-    'ensure_topic_creation',
     'get_open_port',
     'kafka_versions',
     'KafkaIntegrationTestCase',
@@ -21,8 +22,8 @@ __all__ = [
 ]
 
 def random_string(l):
-    s = "".join(random.choice(string.letters) for i in xrange(l))
-    return s
+    s = "".join(random.choice(string.ascii_letters) for i in xrange(l))
+    return s.encode('utf-8')
 
 def kafka_versions(*versions):
     def kafka_versions(func):
@@ -39,16 +40,6 @@ def kafka_versions(*versions):
         return wrapper
     return kafka_versions
 
-def ensure_topic_creation(client, topic_name, timeout = 30):
-    start_time = time.time()
-
-    client.load_metadata_for_topics(topic_name)
-    while not client.has_metadata_for_topic(topic_name):
-        if time.time() > start_time + timeout:
-            raise Exception("Unable to create topic %s" % topic_name)
-        client.load_metadata_for_topics(topic_name)
-        time.sleep(1)
-
 def get_open_port():
     sock = socket.socket()
     sock.bind(("", 0))
@@ -56,9 +47,10 @@ def get_open_port():
     sock.close()
     return port
 
-class KafkaIntegrationTestCase(unittest2.TestCase):
+class KafkaIntegrationTestCase(unittest.TestCase):
     create_client = True
     topic = None
+    server = None
 
     def setUp(self):
         super(KafkaIntegrationTestCase, self).setUp()
@@ -66,12 +58,13 @@ class KafkaIntegrationTestCase(unittest2.TestCase):
             return
 
         if not self.topic:
-            self.topic = "%s-%s" % (self.id()[self.id().rindex(".") + 1:], random_string(10))
+            topic = "%s-%s" % (self.id()[self.id().rindex(".") + 1:], random_string(10).decode('utf-8'))
+            self.topic = topic.encode('utf-8')
 
         if self.create_client:
             self.client = KafkaClient('%s:%d' % (self.server.host, self.server.port))
 
-        ensure_topic_creation(self.client, self.topic)
+        self.client.ensure_topic_exists(self.topic)
 
         self._messages = {}
 
@@ -94,7 +87,11 @@ class KafkaIntegrationTestCase(unittest2.TestCase):
         if s not in self._messages:
             self._messages[s] = '%s-%s-%s' % (s, self.id(), str(uuid.uuid4()))
 
-        return self._messages[s]
+        return self._messages[s].encode('utf-8')
+
+    def key(self, k):
+        return k.encode('utf-8')
+
 
 class Timer(object):
     def __enter__(self):
