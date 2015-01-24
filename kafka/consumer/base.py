@@ -71,12 +71,22 @@ class Consumer(object):
         if not partitions:
             partitions = self.client.get_partition_ids_for_topic(self.topic)
 
+        reqs = [
+            OffsetRequest(self.topic, partition, -2, 1)
+            for partition in partitions
+        ]
+        resps = self.client.send_offset_request(reqs, fail_on_error=True)
+        min_offsets = {}
+        for resp in resps:
+            min_offsets[resp.partition] = resp.offsets[0]
+
         def get_or_init_offset(resp):
             try:
                 kafka.common.check_error(resp)
-                return resp.offset
+                offset = resp.offset
             except UnknownTopicOrPartitionError:
-                return 0
+                offset = 0
+            return max(offset, min_offsets[resp.partition])
 
         for partition in partitions:
             req = OffsetFetchRequest(self.topic, partition)
