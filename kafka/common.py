@@ -1,46 +1,51 @@
+import inspect
+import sys
 from collections import namedtuple
 
 ###############
 #   Structs   #
 ###############
 
-# Request payloads
-ProduceRequest = namedtuple("ProduceRequest",
-                            ["topic", "partition", "messages"])
-
-FetchRequest = namedtuple("FetchRequest",
-                          ["topic", "partition", "offset", "max_bytes"])
-
-OffsetRequest = namedtuple("OffsetRequest",
-                           ["topic", "partition", "time", "max_offsets"])
-
-OffsetCommitRequest = namedtuple("OffsetCommitRequest",
-                                 ["topic", "partition", "offset", "metadata"])
-
+# https://cwiki.apache.org/confluence/display/KAFKA/A+Guide+To+The+Kafka+Protocol#AGuideToTheKafkaProtocol-MetadataAPI
 MetadataRequest = namedtuple("MetadataRequest",
     ["topics"])
-
-OffsetFetchRequest = namedtuple("OffsetFetchRequest", ["topic", "partition"])
 
 MetadataResponse = namedtuple("MetadataResponse",
     ["brokers", "topics"])
 
-# Response payloads
-ProduceResponse = namedtuple("ProduceResponse",
-                             ["topic", "partition", "error", "offset"])
+# https://cwiki.apache.org/confluence/display/KAFKA/A+Guide+To+The+Kafka+Protocol#AGuideToTheKafkaProtocol-ProduceAPI
+ProduceRequest = namedtuple("ProduceRequest",
+    ["topic", "partition", "messages"])
 
-FetchResponse = namedtuple("FetchResponse", ["topic", "partition", "error",
-                                             "highwaterMark", "messages"])
+ProduceResponse = namedtuple("ProduceResponse",
+    ["topic", "partition", "error", "offset"])
+
+# https://cwiki.apache.org/confluence/display/KAFKA/A+Guide+To+The+Kafka+Protocol#AGuideToTheKafkaProtocol-FetchAPI
+FetchRequest = namedtuple("FetchRequest",
+    ["topic", "partition", "offset", "max_bytes"])
+
+FetchResponse = namedtuple("FetchResponse",
+    ["topic", "partition", "error", "highwaterMark", "messages"])
+
+# https://cwiki.apache.org/confluence/display/KAFKA/A+Guide+To+The+Kafka+Protocol#AGuideToTheKafkaProtocol-OffsetAPI
+OffsetRequest = namedtuple("OffsetRequest",
+    ["topic", "partition", "time", "max_offsets"])
 
 OffsetResponse = namedtuple("OffsetResponse",
-                            ["topic", "partition", "error", "offsets"])
+    ["topic", "partition", "error", "offsets"])
+
+# https://cwiki.apache.org/confluence/display/KAFKA/A+Guide+To+The+Kafka+Protocol#AGuideToTheKafkaProtocol-OffsetCommit/FetchAPI
+OffsetCommitRequest = namedtuple("OffsetCommitRequest",
+    ["topic", "partition", "offset", "metadata"])
 
 OffsetCommitResponse = namedtuple("OffsetCommitResponse",
-                                  ["topic", "partition", "error"])
+    ["topic", "partition", "error"])
+
+OffsetFetchRequest = namedtuple("OffsetFetchRequest",
+    ["topic", "partition"])
 
 OffsetFetchResponse = namedtuple("OffsetFetchResponse",
-                                 ["topic", "partition", "offset",
-                                  "metadata", "error"])
+    ["topic", "partition", "offset", "metadata", "error"])
 
 
 
@@ -66,6 +71,11 @@ TopicAndPartition = namedtuple("TopicAndPartition",
 KafkaMessage = namedtuple("KafkaMessage",
     ["topic", "partition", "offset", "key", "value"])
 
+# Define retry policy for async producer
+# Limit value: int >= 0, 0 means no retries
+RetryOptions = namedtuple("RetryOptions",
+    ["limit", "backoff_ms", "retry_on_timeouts"])
+
 
 #################
 #   Exceptions  #
@@ -79,9 +89,6 @@ class KafkaError(RuntimeError):
 class BrokerResponseError(KafkaError):
     pass
 
-class NoError(BrokerResponseError):
-    errno = 0
-    message = 'SUCCESS'
 
 class UnknownError(BrokerResponseError):
     errno = -1
@@ -162,7 +169,9 @@ class KafkaTimeoutError(KafkaError):
 
 
 class FailedPayloadsError(KafkaError):
-    pass
+    def __init__(self, payload, *args):
+        super(FailedPayloadsError, self).__init__(*args)
+        self.payload = payload
 
 
 class ConnectionError(KafkaError):
@@ -201,27 +210,39 @@ class KafkaConfigurationError(KafkaError):
     pass
 
 
-kafka_errors = {
-    -1 : UnknownError,
-    0  : NoError,
-    1  : OffsetOutOfRangeError,
-    2  : InvalidMessageError,
-    3  : UnknownTopicOrPartitionError,
-    4  : InvalidFetchRequestError,
-    5  : LeaderNotAvailableError,
-    6  : NotLeaderForPartitionError,
-    7  : RequestTimedOutError,
-    8  : BrokerNotAvailableError,
-    9  : ReplicaNotAvailableError,
-    10 : MessageSizeTooLargeError,
-    11 : StaleControllerEpochError,
-    12 : OffsetMetadataTooLargeError,
-    13 : StaleLeaderEpochCodeError,
-}
+class AsyncProducerQueueFull(KafkaError):
+    def __init__(self, failed_msgs, *args):
+        super(AsyncProducerQueueFull, self).__init__(*args)
+        self.failed_msgs = failed_msgs
+
+
+def _iter_broker_errors():
+    for name, obj in inspect.getmembers(sys.modules[__name__]):
+        if inspect.isclass(obj) and issubclass(obj, BrokerResponseError) and obj != BrokerResponseError:
+            yield obj
+
+
+kafka_errors = dict([(x.errno, x) for x in _iter_broker_errors()])
 
 
 def check_error(response):
-    error = kafka_errors.get(response.error, UnknownError)
-    if error is not NoError:
-        raise error(response)
+    if isinstance(response, Exception):
+        raise response
+    if response.error:
+        error_class = kafka_errors.get(response.error, UnknownError)
+        raise error_class(response)
 
+
+RETRY_BACKOFF_ERROR_TYPES = (
+    KafkaUnavailableError, LeaderNotAvailableError,
+    ConnectionError, FailedPayloadsError
+)
+
+
+RETRY_REFRESH_ERROR_TYPES = (
+    NotLeaderForPartitionError, UnknownTopicOrPartitionError,
+    LeaderNotAvailableError, ConnectionError
+)
+
+
+RETRY_ERROR_TYPES = RETRY_BACKOFF_ERROR_TYPES + RETRY_REFRESH_ERROR_TYPES

@@ -82,6 +82,9 @@ def relative_unpack(fmt, data, cur):
 def group_by_topic_and_partition(tuples):
     out = collections.defaultdict(dict)
     for t in tuples:
+        assert t.topic not in out or t.partition not in out[t.topic], \
+               'Duplicate {0}s for {1} {2}'.format(t.__class__.__name__,
+                                                   t.topic, t.partition)
         out[t.topic][t.partition] = t
     return out
 
@@ -103,10 +106,12 @@ class ReentrantTimer(object):
     A timer that can be restarted, unlike threading.Timer
     (although this uses threading.Timer)
 
-    t: timer interval in milliseconds
-    fn: a callable to invoke
-    args: tuple of args to be passed to function
-    kwargs: keyword arguments to be passed to function
+    Arguments:
+
+        t: timer interval in milliseconds
+        fn: a callable to invoke
+        args: tuple of args to be passed to function
+        kwargs: keyword arguments to be passed to function
     """
     def __init__(self, t, fn, *args, **kwargs):
 
@@ -124,7 +129,11 @@ class ReentrantTimer(object):
         self.active = None
 
     def _timer(self, active):
-        while not active.wait(self.t):
+        # python2.6 Event.wait() always returns None
+        # python2.7 and greater returns the flag value (true/false)
+        # we want the flag value, so add an 'or' here for python2.6
+        # this is redundant for later python versions (FLAG OR FLAG == FLAG)
+        while not (active.wait(self.t) or active.is_set()):
             self.fn(*self.args, **self.kwargs)
 
     def start(self):
@@ -144,3 +153,7 @@ class ReentrantTimer(object):
         self.thread.join(self.t + 1)
         # noinspection PyAttributeOutsideInit
         self.timer = None
+        self.fn = None
+
+    def __del__(self):
+        self.stop()

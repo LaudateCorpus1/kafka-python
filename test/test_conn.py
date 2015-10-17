@@ -1,5 +1,7 @@
+import logging
 import socket
 import struct
+from threading import Thread
 
 import mock
 from . import unittest
@@ -9,6 +11,10 @@ from kafka.conn import KafkaConnection, collect_hosts, DEFAULT_SOCKET_TIMEOUT_SE
 
 class ConnTest(unittest.TestCase):
     def setUp(self):
+
+        # kafka.conn debug logging is verbose, so only enable in conn tests
+        logging.getLogger('kafka.conn').setLevel(logging.DEBUG)
+
         self.config = {
             'host': 'localhost',
             'port': 9090,
@@ -43,6 +49,11 @@ class ConnTest(unittest.TestCase):
 
         # Reset any mock counts caused by __init__
         self.MockCreateConn.reset_mock()
+
+    def tearDown(self):
+        # Return connection logging to INFO
+        logging.getLogger('kafka.conn').setLevel(logging.INFO)
+
 
     def test_collect_hosts__happy_path(self):
         hosts = "localhost:1234,localhost"
@@ -162,3 +173,54 @@ class ConnTest(unittest.TestCase):
         self.conn.send(self.config['request_id'], self.config['payload'])
         self.assertEqual(self.MockCreateConn.call_count, 1)
         self.conn._sock.sendall.assert_called_with(self.config['payload'])
+
+
+class TestKafkaConnection(unittest.TestCase):
+
+    def setUp(self):
+        # kafka.conn debug logging is verbose, so only enable in conn tests
+        logging.getLogger('kafka.conn').setLevel(logging.DEBUG)
+
+    def tearDown(self):
+        # Return connection logging to INFO
+        logging.getLogger('kafka.conn').setLevel(logging.INFO)
+
+    @mock.patch('socket.create_connection')
+    def test_copy(self, socket):
+        """KafkaConnection copies work as expected"""
+
+        conn = KafkaConnection('kafka', 9092)
+        self.assertEqual(socket.call_count, 1)
+
+        copy = conn.copy()
+        self.assertEqual(socket.call_count, 1)
+        self.assertEqual(copy.host, 'kafka')
+        self.assertEqual(copy.port, 9092)
+        self.assertEqual(copy._sock, None)
+
+        copy.reinit()
+        self.assertEqual(socket.call_count, 2)
+        self.assertNotEqual(copy._sock, None)
+
+    @mock.patch('socket.create_connection')
+    def test_copy_thread(self, socket):
+        """KafkaConnection copies work in other threads"""
+
+        err = []
+        copy = KafkaConnection('kafka', 9092).copy()
+
+        def thread_func(err, copy):
+            try:
+                self.assertEqual(copy.host, 'kafka')
+                self.assertEqual(copy.port, 9092)
+                self.assertNotEqual(copy._sock, None)
+            except Exception as e:
+                err.append(e)
+            else:
+                err.append(None)
+        thread = Thread(target=thread_func, args=(err, copy))
+        thread.start()
+        thread.join()
+
+        self.assertEqual(err, [None])
+        self.assertEqual(socket.call_count, 2)

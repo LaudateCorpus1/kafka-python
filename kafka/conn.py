@@ -9,7 +9,8 @@ import six
 
 from kafka.common import ConnectionError
 
-log = logging.getLogger("kafka")
+
+log = logging.getLogger(__name__)
 
 DEFAULT_SOCKET_TIMEOUT_SECONDS = 120
 DEFAULT_KAFKA_PORT = 9092
@@ -47,10 +48,11 @@ class KafkaConnection(local):
     we can do something in here to facilitate multiplexed requests/responses
     since the Kafka API includes a correlation id.
 
-    host:    the host name or IP address of a kafka broker
-    port:    the port number the kafka broker is listening on
-    timeout: default 120. The socket timeout for sending and receiving data
-             in seconds. None means no timeout, so a request can block forever.
+    Arguments:
+        host: the host name or IP address of a kafka broker
+        port: the port number the kafka broker is listening on
+        timeout: default 120. The socket timeout for sending and receiving data
+            in seconds. None means no timeout, so a request can block forever.
     """
     def __init__(self, host, port, timeout=DEFAULT_SOCKET_TIMEOUT_SECONDS):
         super(KafkaConnection, self).__init__()
@@ -60,6 +62,9 @@ class KafkaConnection(local):
         self._sock = None
 
         self.reinit()
+
+    def __getnewargs__(self):
+        return (self.host, self.port, self.timeout)
 
     def __repr__(self):
         return "<KafkaConnection host=%s port=%d>" % (self.host, self.port)
@@ -116,8 +121,10 @@ class KafkaConnection(local):
     def send(self, request_id, payload):
         """
         Send a request to Kafka
-        param: request_id -- can be any int (used only for debug logging...)
-        param: payload -- an encoded kafka packet (see KafkaProtocol)
+
+        Arguments::
+            request_id (int): can be any int (used only for debug logging...)
+            payload: an encoded kafka packet (see KafkaProtocol)
         """
 
         log.debug("About to send %d bytes to Kafka, request %d" % (len(payload), request_id))
@@ -135,8 +142,12 @@ class KafkaConnection(local):
     def recv(self, request_id):
         """
         Get a response packet from Kafka
-        param: request_id -- can be any int (only used for debug logging...)
-        returns encoded kafka packet response from server as type str
+
+        Arguments:
+            request_id: can be any int (only used for debug logging...)
+
+        Returns:
+            str: Encoded kafka packet response from server
         """
         log.debug("Reading response %d from Kafka" % request_id)
 
@@ -150,9 +161,11 @@ class KafkaConnection(local):
 
     def copy(self):
         """
-        Create an inactive copy of the connection object
-        A reinit() has to be done on the copy before it can be used again
-        return a new KafkaConnection object
+        Create an inactive copy of the connection object, suitable for
+        passing to a background thread.
+
+        The returned copy is not connected; you must call reinit() before
+        using.
         """
         c = copy.deepcopy(self)
         # Python 3 doesn't copy custom attributes of the threadlocal subclass
